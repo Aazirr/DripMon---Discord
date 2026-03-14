@@ -5,6 +5,21 @@ const express = require('express');
 const token = process.env.DISCORD_BOT_TOKEN;
 const port = Number(process.env.BOT_HTTP_PORT || 3000);
 const minecraftChannelId = process.env.MINECRAFT_DISCORD_CHANNEL_ID;
+const minecraftRoleId = process.env.MINECRAFT_DISCORD_ROLE_ID;
+function formatMinecraftRelay(player, message) {
+  const isStartupMessage = player === 'SERVER' && (message === '@minecraft Server has started.' || message === 'Server has started.');
+
+  if (isStartupMessage && minecraftRoleId) {
+    return {
+      content: `📜 **[MC] ${player}**: <@&${minecraftRoleId}> Server has started.`,
+      allowedMentions: { roles: [minecraftRoleId] },
+    };
+  }
+
+  return {
+    content: `📜 **[MC] ${player}**: ${message}`,
+  };
+}
 
 if (!token) {
   console.error('Missing DISCORD_BOT_TOKEN in .env file.');
@@ -60,7 +75,7 @@ app.post('/mc/chat', async (req, res) => {
       return res.status(500).json({ ok: false, error: 'Configured channel is not text-based or not found' });
     }
 
-    await channel.send(`📜 **[MC] ${player}**: ${message}`);
+    await channel.send(formatMinecraftRelay(player, message));
     return res.json({ ok: true });
   } catch (err) {
     console.error('Error relaying MC chat to Discord:', err);
