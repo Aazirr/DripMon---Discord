@@ -205,6 +205,64 @@ async function handleRestartCommand(message) {
   }
 }
 
+function hasAdminRole(message) {
+  return !!message.member?.roles?.cache?.has(minecraftAdminRoleId);
+}
+
+async function handleStartupTestCommand(message) {
+  if (!message.inGuild()) {
+    await message.reply('This command can only be used in a server channel.');
+    return;
+  }
+
+  const missingConfig = getRestartConfigErrors();
+  if (missingConfig.length > 0) {
+    await message.reply(`Startup test is not configured. Missing: ${missingConfig.join(', ')}`);
+    return;
+  }
+
+  if (!hasAdminRole(message)) {
+    await message.reply('You do not have permission to run startup ping tests.');
+    return;
+  }
+
+  try {
+    const state = await getPterodactylServerState();
+    await sendMinecraftRelay('SERVER', '@minecraft Server has started.');
+    await message.reply(`Startup ping test sent successfully (current Pterodactyl state: ${state}).`);
+  } catch (err) {
+    console.error('Failed to run startup ping test:', err);
+    await message.reply(`Startup ping test failed: ${err.message}`);
+  }
+}
+
+async function handleMonitorStateCommand(message) {
+  if (!message.inGuild()) {
+    await message.reply('This command can only be used in a server channel.');
+    return;
+  }
+
+  const missingConfig = getRestartConfigErrors();
+  if (missingConfig.length > 0) {
+    await message.reply(`Monitor state check is not configured. Missing: ${missingConfig.join(', ')}`);
+    return;
+  }
+
+  if (!hasAdminRole(message)) {
+    await message.reply('You do not have permission to view monitor state.');
+    return;
+  }
+
+  try {
+    const currentState = await getPterodactylServerState();
+    const lastKnown = lastKnownPterodactylState ?? 'null';
+    await message.reply(`Monitor state: lastKnown=${lastKnown}, current=${currentState}, pollMs=${pterodactylStatePollMs}.`);
+  } catch (err) {
+    console.error('Failed to check monitor state:', err);
+    await message.reply(`Monitor state check failed: ${err.message}`);
+  }
+}
+
 function formatMinecraftRelay(player, message) {
   const isStartupMessage = player === 'SERVER' && (message === '@minecraft Server has started.' || message === 'Server has started.');
 
@@ -251,6 +309,16 @@ client.on(Events.MessageCreate, async (message) => {
 
   if (content === '!restart') {
     await handleRestartCommand(message);
+    return;
+  }
+
+  if (content === '!startuptest') {
+    await handleStartupTestCommand(message);
+    return;
+  }
+
+  if (content === '!monitorstate') {
+    await handleMonitorStateCommand(message);
   }
 });
 
