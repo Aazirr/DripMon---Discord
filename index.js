@@ -13,7 +13,7 @@ const pterodactylServerId = process.env.PTERODACTYL_SERVER_ID;
 const pterodactylClientApiKey = process.env.PTERODACTYL_CLIENT_API_KEY;
 const restartCooldownMs = Number(process.env.RESTART_COOLDOWN_MS || 60000);
 const discordLinkSharedSecret = (process.env.DISCORDLINK_SHARED_SECRET || '').trim();
-const pterodactylStartupPingEnabled = (process.env.PTERODACTYL_STARTUP_PING_ENABLED || 'true').toLowerCase() !== 'false';
+const pterodactylStartupPingEnabled = (process.env.PTERODACTYL_STARTUP_PING_ENABLED || 'false').toLowerCase() !== 'false';
 const pterodactylStatePollMsRaw = Number(process.env.PTERODACTYL_STATE_POLL_MS || 15000);
 const pterodactylStatePollMs = Number.isFinite(pterodactylStatePollMsRaw) && pterodactylStatePollMsRaw >= 5000
   ? pterodactylStatePollMsRaw
