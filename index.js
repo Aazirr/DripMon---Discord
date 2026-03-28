@@ -1,6 +1,7 @@
 require('dotenv').config();
 const { Client, GatewayIntentBits, Partials, Events } = require('discord.js');
 const express = require('express');
+const crypto = require('crypto');
 
 const token = process.env.DISCORD_BOT_TOKEN;
 const port = Number(process.env.BOT_HTTP_PORT || 3000);
@@ -11,6 +12,7 @@ const pterodactylPanelUrl = (process.env.PTERODACTYL_PANEL_URL || '').replace(/\
 const pterodactylServerId = process.env.PTERODACTYL_SERVER_ID;
 const pterodactylClientApiKey = process.env.PTERODACTYL_CLIENT_API_KEY;
 const restartCooldownMs = Number(process.env.RESTART_COOLDOWN_MS || 60000);
+const discordLinkSharedSecret = (process.env.DISCORDLINK_SHARED_SECRET || '').trim();
 const pterodactylStartupPingEnabled = (process.env.PTERODACTYL_STARTUP_PING_ENABLED || 'true').toLowerCase() !== 'false';
 const pterodactylStatePollMsRaw = Number(process.env.PTERODACTYL_STATE_POLL_MS || 15000);
 const pterodactylStatePollMs = Number.isFinite(pterodactylStatePollMsRaw) && pterodactylStatePollMsRaw >= 5000
@@ -24,6 +26,22 @@ let pterodactylMonitorTimer = null;
 
 function hasPterodactylConfig() {
   return !!(pterodactylPanelUrl && pterodactylServerId && pterodactylClientApiKey);
+}
+
+function hasBridgeSecretConfigured() {
+  return discordLinkSharedSecret.length > 0;
+}
+
+function isBridgeSecretValid(request) {
+  const provided = request.get('X-DiscordLink-Secret') || '';
+  const providedBuffer = Buffer.from(provided, 'utf8');
+  const expectedBuffer = Buffer.from(discordLinkSharedSecret, 'utf8');
+
+  if (providedBuffer.length !== expectedBuffer.length) {
+    return false;
+  }
+
+  return crypto.timingSafeEqual(providedBuffer, expectedBuffer);
 }
 
 async function getPterodactylErrorReason(response) {
@@ -333,6 +351,15 @@ app.get('/mc/chat', (_req, res) => {
 });
 
 app.post('/mc/chat', async (req, res) => {
+  if (!hasBridgeSecretConfigured()) {
+    console.warn('DISCORDLINK_SHARED_SECRET is not configured; refusing /mc/chat requests.');
+    return res.status(503).json({ ok: false, error: 'Bridge secret not configured' });
+  }
+
+  if (!isBridgeSecretValid(req)) {
+    return res.status(401).json({ ok: false, error: 'Unauthorized bridge request' });
+  }
+
   const { player, message } = req.body || {};
 
   if (!minecraftChannelId) {
