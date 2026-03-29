@@ -1024,7 +1024,7 @@ function renderTournamentHtml(tournamentSlug) {
       document.getElementById('subtitle').textContent = 'Players: ' + t.players.length + ' | Exported: ' + (t.exportedAt || 'Unknown');
       document.getElementById('weakness-note').textContent = revealWeakness
         ? 'Weakness mode enabled.'
-        : 'Weakness mode disabled. Use secret URL token to reveal type weakness cards.';
+        : '';
 
       const grid = document.getElementById('grid');
       const players = Array.isArray(t.players) ? t.players : [];
