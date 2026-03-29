@@ -2,6 +2,8 @@ require('dotenv').config();
 const { Client, GatewayIntentBits, Partials, Events } = require('discord.js');
 const express = require('express');
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 
 const token = process.env.DISCORD_BOT_TOKEN;
 const port = Number(process.env.BOT_HTTP_PORT || 3000);
@@ -18,11 +20,58 @@ const pterodactylStatePollMsRaw = Number(process.env.PTERODACTYL_STATE_POLL_MS |
 const pterodactylStatePollMs = Number.isFinite(pterodactylStatePollMsRaw) && pterodactylStatePollMsRaw >= 5000
   ? pterodactylStatePollMsRaw
   : 15000;
+const weaknessRevealSecret = (process.env.TOURNAMENT_WEAKNESS_SECRET || '').trim();
+
+const DATA_DIR = path.join(__dirname, 'data');
+const TOURNAMENT_DIR = path.join(DATA_DIR, 'tournaments');
+const POKEAPI_CACHE_DIR = path.join(DATA_DIR, 'pokeapi-cache');
+const memoryPokeApiCache = new Map();
+
+const TYPE_COLORS = {
+  normal: '#a8a878',
+  fire: '#f08030',
+  water: '#6890f0',
+  electric: '#f8d030',
+  grass: '#78c850',
+  ice: '#98d8d8',
+  fighting: '#c03028',
+  poison: '#a040a0',
+  ground: '#e0c068',
+  flying: '#a890f0',
+  psychic: '#f85888',
+  bug: '#a8b820',
+  rock: '#b8a038',
+  ghost: '#705898',
+  dragon: '#7038f8',
+  dark: '#705848',
+  steel: '#b8b8d0',
+  fairy: '#ee99ac',
+};
+
+const SHOWDOWN_TRAINER_SPRITES = [
+  'ace-trainer', 'ace-trainerf', 'beauty', 'blackbelt', 'bugcatcher', 'champion',
+  'dragon-tamer', 'engineer', 'fisherman', 'gentleman', 'hiker', 'lass',
+  'leader-brock', 'leader-misty', 'leader-surge', 'leader-erika', 'leader-koga', 'leader-sabrina',
+  'leader-blaine', 'leader-giovanni', 'pokemaniac', 'psychic', 'ranger', 'scientist',
+  'swimmer', 'swimmerf', 'youngster', 'worker', 'hex-maniac', 'artist',
+  'battlegirl', 'cyclist', 'ninja-boy', 'veteran', 'veteranf', 'breeder',
+  'pokemon-breeder', 'pokefan', 'pokefanf', 'supernerd', 'doctor', 'nurse'
+];
 
 let restartInFlight = false;
 let lastRestartAtMs = 0;
 let lastKnownPterodactylState = null;
 let pterodactylMonitorTimer = null;
+
+ensureDir(DATA_DIR);
+ensureDir(TOURNAMENT_DIR);
+ensureDir(POKEAPI_CACHE_DIR);
+
+function ensureDir(dir) {
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+}
 
 function hasPterodactylConfig() {
   return !!(pterodactylPanelUrl && pterodactylServerId && pterodactylClientApiKey);
@@ -44,25 +93,358 @@ function isBridgeSecretValid(request) {
   return crypto.timingSafeEqual(providedBuffer, expectedBuffer);
 }
 
-async function getPterodactylErrorReason(response) {
-  const fallback = `HTTP ${response.status}`;
-  const raw = await response.text();
+function slugifyTournamentName(name) {
+  return String(name || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '') || 'tournament';
+}
 
-  if (!raw) {
-    return fallback;
+function normalizePokemonName(name) {
+  return String(name || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[.']/g, '')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-');
+}
+
+function normalizeMoveName(name) {
+  return normalizePokemonName(name);
+}
+
+function normalizeAbilityName(name) {
+  return normalizePokemonName(name);
+}
+
+function normalizeItemName(name) {
+  return normalizePokemonName(name);
+}
+
+function pickTrainerSprite(playerUuid, playerName) {
+  const seed = `${playerUuid || ''}:${playerName || ''}`;
+  const digest = crypto.createHash('sha256').update(seed).digest();
+  const idx = digest.readUInt32BE(0) % SHOWDOWN_TRAINER_SPRITES.length;
+  const key = SHOWDOWN_TRAINER_SPRITES[idx];
+  return `https://play.pokemonshowdown.com/sprites/trainers/${key}.png`;
+}
+
+function getTournamentPathBySlug(slug) {
+  return path.join(TOURNAMENT_DIR, `${slug}.json`);
+}
+
+function writeTournamentSnapshot(snapshot) {
+  const slug = slugifyTournamentName(snapshot?.tournamentName || snapshot?.slug || 'tournament');
+  const finalData = {
+    schemaVersion: 2,
+    exportedAt: new Date().toISOString(),
+    ...snapshot,
+    slug,
+  };
+
+  const filePath = getTournamentPathBySlug(slug);
+  fs.writeFileSync(filePath, JSON.stringify(finalData, null, 2), 'utf8');
+  return { slug, filePath, snapshot: finalData };
+}
+
+function readTournamentSnapshot(slug) {
+  const filePath = getTournamentPathBySlug(slug);
+  if (!fs.existsSync(filePath)) {
+    return null;
+  }
+
+  const raw = fs.readFileSync(filePath, 'utf8');
+  return JSON.parse(raw);
+}
+
+function getPokeApiCachePath(url) {
+  const key = crypto.createHash('sha256').update(url).digest('hex');
+  return path.join(POKEAPI_CACHE_DIR, `${key}.json`);
+}
+
+async function getCachedJson(url) {
+  if (memoryPokeApiCache.has(url)) {
+    return memoryPokeApiCache.get(url);
+  }
+
+  const diskPath = getPokeApiCachePath(url);
+  if (fs.existsSync(diskPath)) {
+    const parsed = JSON.parse(fs.readFileSync(diskPath, 'utf8'));
+    memoryPokeApiCache.set(url, parsed.payload);
+    return parsed.payload;
+  }
+
+  const response = await fetch(url, {
+    headers: {
+      Accept: 'application/json',
+      'User-Agent': 'discordlink-bot/1.1.0',
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`PokeAPI request failed (${response.status}) for ${url}`);
+  }
+
+  const payload = await response.json();
+  const wrapped = {
+    fetchedAt: new Date().toISOString(),
+    url,
+    payload,
+  };
+
+  fs.writeFileSync(diskPath, JSON.stringify(wrapped, null, 2), 'utf8');
+  memoryPokeApiCache.set(url, payload);
+  return payload;
+}
+
+async function getPokeApiPokemon(speciesName) {
+  const normalized = normalizePokemonName(speciesName);
+  const speciesAliases = {
+    nidoranmale: 'nidoran-m',
+    nidoranfemale: 'nidoran-f',
+    'mr-mime': 'mr-mime',
+    'mime-jr': 'mime-jr',
+    farfetchd: 'farfetchd',
+  };
+
+  const resolved = speciesAliases[normalized] || normalized;
+  const url = `https://pokeapi.co/api/v2/pokemon/${encodeURIComponent(resolved)}`;
+  return getCachedJson(url);
+}
+
+async function getPokeApiMove(moveName) {
+  const normalized = normalizeMoveName(moveName);
+  const url = `https://pokeapi.co/api/v2/move/${encodeURIComponent(normalized)}`;
+  return getCachedJson(url);
+}
+
+async function getPokeApiAbility(abilityName) {
+  const normalized = normalizeAbilityName(abilityName);
+  const url = `https://pokeapi.co/api/v2/ability/${encodeURIComponent(normalized)}`;
+  return getCachedJson(url);
+}
+
+async function getPokeApiItem(itemName) {
+  const normalized = normalizeItemName(itemName);
+  if (!normalized || normalized === 'none' || normalized === 'no-item') {
+    return null;
+  }
+  const url = `https://pokeapi.co/api/v2/item/${encodeURIComponent(normalized)}`;
+  return getCachedJson(url);
+}
+
+async function getTypeData(typeName) {
+  const url = `https://pokeapi.co/api/v2/type/${encodeURIComponent(typeName)}`;
+  return getCachedJson(url);
+}
+
+function parseWeaknessMultiplierByType(primaryType, secondaryType, primaryTypeData, secondaryTypeData) {
+  const allTypes = Object.keys(TYPE_COLORS);
+  const multipliers = {};
+  for (const t of allTypes) {
+    multipliers[t] = 1;
+  }
+
+  const applyTypeData = (typeData) => {
+    if (!typeData?.damage_relations) {
+      return;
+    }
+    for (const t of typeData.damage_relations.double_damage_from || []) {
+      multipliers[t.name] = (multipliers[t.name] || 1) * 2;
+    }
+    for (const t of typeData.damage_relations.half_damage_from || []) {
+      multipliers[t.name] = (multipliers[t.name] || 1) * 0.5;
+    }
+    for (const t of typeData.damage_relations.no_damage_from || []) {
+      multipliers[t.name] = 0;
+    }
+  };
+
+  if (primaryType) {
+    applyTypeData(primaryTypeData);
+  }
+  if (secondaryType) {
+    applyTypeData(secondaryTypeData);
+  }
+
+  return Object.entries(multipliers)
+    .map(([type, multiplier]) => ({ type, multiplier }))
+    .sort((a, b) => b.multiplier - a.multiplier || a.type.localeCompare(b.type));
+}
+
+function parseStatSpreadString(raw) {
+  const input = String(raw || '').trim();
+  const out = { hp: null, atk: null, def: null, spa: null, spd: null, spe: null, raw: input };
+
+  if (!input || input === 'unknown') {
+    return out;
+  }
+
+  const pairs = input.split(';');
+  for (const pair of pairs) {
+    const [k, v] = pair.split('=');
+    if (!k || v == null) continue;
+    const key = k.trim().toLowerCase();
+    const value = Number(v.trim());
+    if (!Number.isFinite(value)) continue;
+    if (key in out) {
+      out[key] = value;
+    }
+  }
+
+  return out;
+}
+
+async function enrichPokemon(pokemon, includeWeakness) {
+  const enriched = {
+    ...pokemon,
+    pokeApi: null,
+    moveInfo: [],
+    abilityInfo: null,
+    itemInfo: null,
+    weakness: null,
+    parse: {
+      ivs: parseStatSpreadString(pokemon.ivSpread),
+      evs: parseStatSpreadString(pokemon.evSpread),
+    },
+  };
+
+  try {
+    const pokeApi = await getPokeApiPokemon(pokemon.species || pokemon.displayName);
+    enriched.pokeApi = {
+      id: pokeApi.id,
+      name: pokeApi.name,
+      sprite: pokeApi.sprites?.front_default || null,
+      artwork: pokeApi.sprites?.other?.['official-artwork']?.front_default || pokeApi.sprites?.front_default || null,
+      types: (pokeApi.types || []).map((entry) => entry.type.name),
+      stats: pokeApi.stats || [],
+    };
+
+    if (includeWeakness && enriched.pokeApi.types.length > 0) {
+      const [primaryType, secondaryType] = enriched.pokeApi.types;
+      const primaryTypeData = await getTypeData(primaryType);
+      const secondaryTypeData = secondaryType ? await getTypeData(secondaryType) : null;
+      enriched.weakness = parseWeaknessMultiplierByType(primaryType, secondaryType, primaryTypeData, secondaryTypeData);
+    }
+  } catch (err) {
+    enriched.pokeApiError = err.message;
   }
 
   try {
-    const payload = JSON.parse(raw);
-    const detail = payload?.errors?.[0]?.detail;
-    if (detail) {
-      return detail;
+    if (pokemon.ability && pokemon.ability.toLowerCase() !== 'unknown') {
+      const ability = await getPokeApiAbility(pokemon.ability);
+      const englishEffect = (ability.effect_entries || []).find((entry) => entry.language?.name === 'en');
+      enriched.abilityInfo = {
+        name: ability.name,
+        shortEffect: englishEffect?.short_effect || null,
+      };
     }
-  } catch (_err) {
-    // Keep fallback formatting if body is not JSON.
+  } catch (err) {
+    enriched.abilityError = err.message;
   }
 
-  return `${fallback}: ${raw.slice(0, 300)}`;
+  try {
+    const item = await getPokeApiItem(pokemon.heldItem);
+    if (item) {
+      const englishEffect = (item.effect_entries || []).find((entry) => entry.language?.name === 'en');
+      enriched.itemInfo = {
+        name: item.name,
+        sprite: item.sprites?.default || null,
+        shortEffect: englishEffect?.short_effect || null,
+      };
+    }
+  } catch (err) {
+    enriched.itemError = err.message;
+  }
+
+  const moveNames = Array.isArray(pokemon.moves) ? pokemon.moves : [];
+  for (const moveName of moveNames) {
+    try {
+      const move = await getPokeApiMove(moveName);
+      enriched.moveInfo.push({
+        sourceName: moveName,
+        name: move.name,
+        type: move.type?.name || null,
+        power: move.power,
+        accuracy: move.accuracy,
+        pp: move.pp,
+        damageClass: move.damage_class?.name || null,
+      });
+    } catch (err) {
+      enriched.moveInfo.push({
+        sourceName: moveName,
+        error: err.message,
+      });
+    }
+  }
+
+  return enriched;
+}
+
+async function buildTournamentViewData(snapshot, includeWeakness) {
+  const players = [];
+  const sourcePlayers = Array.isArray(snapshot.players) ? snapshot.players : [];
+
+  for (const player of sourcePlayers) {
+    const team = Array.isArray(player.team) ? player.team : [];
+    const enrichedTeam = [];
+    for (const pokemon of team) {
+      enrichedTeam.push(await enrichPokemon(pokemon, includeWeakness));
+    }
+
+    players.push({
+      ...player,
+      trainerSprite: pickTrainerSprite(player.playerUuid, player.playerName),
+      team: enrichedTeam,
+    });
+  }
+
+  return {
+    ...snapshot,
+    players,
+    revealWeakness: includeWeakness,
+    generatedAt: new Date().toISOString(),
+  };
+}
+
+function weaknessSecretValid(req) {
+  if (!weaknessRevealSecret) {
+    return false;
+  }
+
+  const queryToken = String(req.query.w || req.query.weak || '').trim();
+  const pathToken = String(req.params.weaknessToken || '').trim();
+  const provided = queryToken || pathToken;
+  if (!provided) {
+    return false;
+  }
+
+  const providedBuffer = Buffer.from(provided, 'utf8');
+  const expectedBuffer = Buffer.from(weaknessRevealSecret, 'utf8');
+  if (providedBuffer.length !== expectedBuffer.length) {
+    return false;
+  }
+  return crypto.timingSafeEqual(providedBuffer, expectedBuffer);
+}
+
+function getPterodactylErrorReason(response) {
+  const fallback = `HTTP ${response.status}`;
+  return response.text().then((raw) => {
+    if (!raw) return fallback;
+
+    try {
+      const payload = JSON.parse(raw);
+      const detail = payload?.errors?.[0]?.detail;
+      if (detail) {
+        return detail;
+      }
+    } catch (_err) {
+      // Keep fallback formatting if body is not JSON.
+    }
+
+    return `${fallback}: ${raw.slice(0, 300)}`;
+  });
 }
 
 async function sendToMinecraftChannel(payload) {
@@ -296,6 +678,380 @@ function formatMinecraftRelay(player, message) {
   };
 }
 
+function renderTournamentHtml(tournamentSlug) {
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DiscordLink Tournament - ${tournamentSlug}</title>
+  <style>
+    :root {
+      --bg: #fffaf3;
+      --ink: #1e2430;
+      --sub: #53627a;
+      --card: #ffffff;
+      --line: #d9e0ea;
+      --accent: #0f9d58;
+      --accent-2: #1a73e8;
+      --danger: #d93025;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 15% 20%, #ffe4a3 0%, transparent 28%),
+        radial-gradient(circle at 85% 0%, #b7d6ff 0%, transparent 32%),
+        var(--bg);
+      min-height: 100vh;
+    }
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 20px;
+    }
+    .hero {
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: linear-gradient(120deg, #ffffff 0%, #fff1d8 100%);
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+    .hero h1 { margin: 0 0 8px; }
+    .muted { color: var(--sub); }
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 12px 0;
+    }
+    .toolbar input {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 8px 10px;
+      min-width: 220px;
+      background: #fff;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 12px;
+    }
+    .player-card {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--card);
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+      overflow: hidden;
+    }
+    .player-head {
+      display: flex;
+      gap: 10px;
+      padding: 10px;
+      border-bottom: 1px solid var(--line);
+      align-items: center;
+    }
+    .trainer {
+      width: 64px;
+      height: 64px;
+      border-radius: 10px;
+      object-fit: contain;
+      background: #f8fbff;
+      border: 1px solid var(--line);
+    }
+    .player-meta h3 { margin: 0; font-size: 1.05rem; }
+    .chip {
+      display: inline-block;
+      padding: 3px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      font-size: 12px;
+      margin-right: 6px;
+      margin-top: 4px;
+      background: #f8fbff;
+    }
+    .team {
+      padding: 10px;
+      display: grid;
+      gap: 8px;
+    }
+    .poke {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 8px;
+      background: #fff;
+    }
+    .poke-row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      cursor: pointer;
+    }
+    .poke-sprite {
+      width: 56px;
+      height: 56px;
+      object-fit: contain;
+      border-radius: 8px;
+      background: #f4f8ff;
+      border: 1px solid var(--line);
+      flex-shrink: 0;
+    }
+    .type-pill {
+      display: inline-block;
+      font-size: 11px;
+      border-radius: 999px;
+      padding: 2px 8px;
+      color: #fff;
+      margin-right: 4px;
+      margin-top: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .details {
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px dashed var(--line);
+      display: none;
+      font-size: 0.92rem;
+    }
+    .details.open { display: block; }
+    .moves { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+    .move {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 2px 8px;
+      background: #f8fbff;
+      font-size: 12px;
+    }
+    .weak-grid {
+      margin-top: 8px;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(90px, 1fr));
+      gap: 6px;
+    }
+    .weak-item {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 4px 6px;
+      font-size: 12px;
+      background: #fff;
+    }
+    .footnote {
+      margin-top: 12px;
+      color: var(--sub);
+      font-size: 12px;
+    }
+    @media (max-width: 680px) {
+      .container { padding: 12px; }
+      .player-head { align-items: flex-start; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="hero">
+      <h1 id="title">Tournament</h1>
+      <div class="muted" id="subtitle">Loading...</div>
+      <div class="toolbar">
+        <input id="search" placeholder="Search player / pokemon / move" />
+      </div>
+      <div class="muted" id="weakness-note"></div>
+    </div>
+    <div id="grid" class="grid"></div>
+    <div class="footnote">Data source: mod export snapshots + cached PokeAPI resources. Trainer sprites: Pokemon Showdown.</div>
+  </div>
+
+  <script>
+    const TYPE_COLORS = ${JSON.stringify(TYPE_COLORS)};
+
+    function createTypePill(typeName) {
+      const span = document.createElement('span');
+      span.className = 'type-pill';
+      span.textContent = typeName;
+      span.style.background = TYPE_COLORS[typeName] || '#777';
+      return span;
+    }
+
+    function weaknessLabel(multiplier) {
+      if (multiplier === 0) return '0x';
+      if (multiplier === 0.25) return '1/4x';
+      if (multiplier === 0.5) return '1/2x';
+      if (multiplier === 1) return '1x';
+      if (multiplier === 2) return '2x';
+      if (multiplier === 4) return '4x';
+      return multiplier + 'x';
+    }
+
+    function renderPokemon(pokemon, revealWeakness) {
+      const wrapper = document.createElement('div');
+      wrapper.className = 'poke';
+
+      const row = document.createElement('div');
+      row.className = 'poke-row';
+
+      const sprite = document.createElement('img');
+      sprite.className = 'poke-sprite';
+      sprite.src = pokemon.pokeApi?.artwork || pokemon.pokeApi?.sprite || 'https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/0.png';
+      sprite.alt = pokemon.displayName || pokemon.species || 'Pokemon';
+
+      const meta = document.createElement('div');
+      const name = document.createElement('div');
+      name.innerHTML = '<strong>' + (pokemon.displayName || pokemon.species || 'Unknown') + '</strong>';
+      meta.appendChild(name);
+
+      const chips = document.createElement('div');
+      chips.innerHTML = '<span class="chip">Nature: ' + (pokemon.nature || 'Unknown') + '</span>'
+        + '<span class="chip">Gender: ' + (pokemon.gender || 'Unknown') + '</span>'
+        + '<span class="chip">Form: ' + (pokemon.form || 'Unknown') + '</span>';
+      meta.appendChild(chips);
+
+      const typeWrap = document.createElement('div');
+      const types = pokemon.pokeApi?.types || [];
+      for (const t of types) {
+        typeWrap.appendChild(createTypePill(t));
+      }
+      meta.appendChild(typeWrap);
+
+      row.appendChild(sprite);
+      row.appendChild(meta);
+      wrapper.appendChild(row);
+
+      const details = document.createElement('div');
+      details.className = 'details';
+
+      details.innerHTML = ''
+        + '<div><strong>Ability:</strong> ' + (pokemon.ability || 'Unknown') + '</div>'
+        + '<div><strong>Held Item:</strong> ' + (pokemon.heldItem || 'None') + '</div>'
+        + '<div><strong>IVs:</strong> ' + (pokemon.ivSpread || 'unknown') + '</div>'
+        + '<div><strong>EVs:</strong> ' + (pokemon.evSpread || 'unknown') + '</div>';
+
+      const moveWrap = document.createElement('div');
+      moveWrap.className = 'moves';
+      const moveInfo = Array.isArray(pokemon.moveInfo) ? pokemon.moveInfo : [];
+      if (moveInfo.length === 0) {
+        const none = document.createElement('span');
+        none.className = 'move';
+        none.textContent = 'No moves';
+        moveWrap.appendChild(none);
+      } else {
+        for (const move of moveInfo) {
+          const m = document.createElement('span');
+          m.className = 'move';
+          const suffix = move.type ? ' [' + move.type + ']' : '';
+          m.textContent = (move.sourceName || move.name || 'unknown') + suffix;
+          moveWrap.appendChild(m);
+        }
+      }
+      details.appendChild(moveWrap);
+
+      if (revealWeakness && Array.isArray(pokemon.weakness)) {
+        const weak = document.createElement('div');
+        weak.className = 'weak-grid';
+        for (const entry of pokemon.weakness) {
+          if (![0, 0.5, 2, 4].includes(entry.multiplier)) continue;
+          const item = document.createElement('div');
+          item.className = 'weak-item';
+          item.textContent = entry.type + ': ' + weaknessLabel(entry.multiplier);
+          weak.appendChild(item);
+        }
+        details.appendChild(weak);
+      }
+
+      wrapper.appendChild(details);
+
+      row.addEventListener('click', () => {
+        details.classList.toggle('open');
+      });
+
+      return wrapper;
+    }
+
+    function renderPlayer(player, revealWeakness) {
+      const card = document.createElement('article');
+      card.className = 'player-card';
+
+      const head = document.createElement('div');
+      head.className = 'player-head';
+      head.innerHTML = ''
+        + '<img class="trainer" src="' + player.trainerSprite + '" alt="Trainer sprite" />'
+        + '<div class="player-meta">'
+        + '  <h3>' + player.playerName + '</h3>'
+        + '  <div class="muted">Registered: ' + (player.registeredAt || 'Unknown') + '</div>'
+        + '  <div><span class="chip">Team Size: ' + (Array.isArray(player.team) ? player.team.length : 0) + '</span></div>'
+        + '</div>';
+      card.appendChild(head);
+
+      const teamWrap = document.createElement('div');
+      teamWrap.className = 'team';
+      const team = Array.isArray(player.team) ? player.team : [];
+      for (const pokemon of team) {
+        teamWrap.appendChild(renderPokemon(pokemon, revealWeakness));
+      }
+      card.appendChild(teamWrap);
+
+      return card;
+    }
+
+    function playerSearchBlob(player) {
+      const team = Array.isArray(player.team) ? player.team : [];
+      let blob = player.playerName + ' ';
+      for (const p of team) {
+        blob += (p.species || '') + ' ';
+        blob += (p.displayName || '') + ' ';
+        blob += (p.moves || []).join(' ') + ' ';
+      }
+      return blob.toLowerCase();
+    }
+
+    async function load() {
+      const params = new URLSearchParams(location.search);
+      const weak = params.get('w') || params.get('weak') || '';
+      const url = '/api/tournament/${tournamentSlug}' + (weak ? ('?w=' + encodeURIComponent(weak)) : '');
+      const response = await fetch(url);
+      const data = await response.json();
+
+      if (!data.ok) {
+        document.getElementById('title').textContent = 'Tournament not found';
+        document.getElementById('subtitle').textContent = data.error || 'Unknown error';
+        return;
+      }
+
+      const t = data.tournament;
+      const revealWeakness = !!t.revealWeakness;
+      document.getElementById('title').textContent = t.tournamentName + ' (' + t.status + ')';
+      document.getElementById('subtitle').textContent = 'Players: ' + t.players.length + ' | Exported: ' + (t.exportedAt || 'Unknown');
+      document.getElementById('weakness-note').textContent = revealWeakness
+        ? 'Weakness mode enabled.'
+        : 'Weakness mode disabled. Use secret URL token to reveal type weakness cards.';
+
+      const grid = document.getElementById('grid');
+      const players = Array.isArray(t.players) ? t.players : [];
+      const entries = players.map((player) => ({ player, card: renderPlayer(player, revealWeakness), blob: playerSearchBlob(player) }));
+      for (const entry of entries) {
+        grid.appendChild(entry.card);
+      }
+
+      const searchInput = document.getElementById('search');
+      searchInput.addEventListener('input', () => {
+        const q = searchInput.value.trim().toLowerCase();
+        for (const entry of entries) {
+          const visible = !q || entry.blob.includes(q);
+          entry.card.style.display = visible ? '' : 'none';
+        }
+      });
+    }
+
+    load().catch((err) => {
+      document.getElementById('title').textContent = 'Failed to load tournament';
+      document.getElementById('subtitle').textContent = err.message;
+    });
+  </script>
+</body>
+</html>`;
+}
+
 if (!token) {
   console.error('Missing DISCORD_BOT_TOKEN in .env file.');
   process.exit(1);
@@ -340,9 +1096,8 @@ client.on(Events.MessageCreate, async (message) => {
   }
 });
 
-// Simple HTTP server for Minecraft to call
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: '2mb' }));
 
 app.get('/mc/chat', (_req, res) => {
   res
@@ -380,6 +1135,76 @@ app.post('/mc/chat', async (req, res) => {
   }
 });
 
+app.post('/mc/tournament-export', async (req, res) => {
+  if (!hasBridgeSecretConfigured()) {
+    console.warn('DISCORDLINK_SHARED_SECRET is not configured; refusing /mc/tournament-export requests.');
+    return res.status(503).json({ ok: false, error: 'Bridge secret not configured' });
+  }
+
+  if (!isBridgeSecretValid(req)) {
+    return res.status(401).json({ ok: false, error: 'Unauthorized bridge request' });
+  }
+
+  const payload = req.body || {};
+  if (!payload.tournamentName || !Array.isArray(payload.players)) {
+    return res.status(400).json({ ok: false, error: 'Invalid tournament export payload.' });
+  }
+
+  try {
+    const { slug, snapshot } = writeTournamentSnapshot(payload);
+    const publicUrl = `/tournament/${encodeURIComponent(slug)}`;
+    return res.json({
+      ok: true,
+      slug,
+      publicUrl,
+      weaknessHint: weaknessRevealSecret ? `${publicUrl}?w=<secret>` : null,
+      players: snapshot.players.length,
+    });
+  } catch (err) {
+    console.error('Failed to store tournament export:', err);
+    return res.status(500).json({ ok: false, error: 'Failed to store export snapshot.' });
+  }
+});
+
+app.get('/tournament/:slug', async (req, res) => {
+  const slug = String(req.params.slug || '').trim();
+  const snapshot = readTournamentSnapshot(slug);
+  if (!snapshot) {
+    return res.status(404).send('Tournament not found.');
+  }
+
+  res.type('html').send(renderTournamentHtml(slug));
+});
+
+app.get('/tournament/:slug/weak/:weaknessToken', async (req, res) => {
+  const slug = String(req.params.slug || '').trim();
+  const snapshot = readTournamentSnapshot(slug);
+  if (!snapshot) {
+    return res.status(404).send('Tournament not found.');
+  }
+
+  const redirectUrl = `/tournament/${encodeURIComponent(slug)}?w=${encodeURIComponent(req.params.weaknessToken)}`;
+  return res.redirect(302, redirectUrl);
+});
+
+app.get('/api/tournament/:slug', async (req, res) => {
+  const slug = String(req.params.slug || '').trim();
+  const snapshot = readTournamentSnapshot(slug);
+  if (!snapshot) {
+    return res.status(404).json({ ok: false, error: 'Tournament not found.' });
+  }
+
+  const includeWeakness = weaknessSecretValid(req);
+
+  try {
+    const view = await buildTournamentViewData(snapshot, includeWeakness);
+    return res.json({ ok: true, tournament: view });
+  } catch (err) {
+    console.error('Failed to build tournament view data:', err);
+    return res.status(500).json({ ok: false, error: 'Failed to enrich tournament data.' });
+  }
+});
+
 app.get('/health', (_req, res) => {
   const ready = !!client.user;
   res.json({
@@ -390,7 +1215,8 @@ app.get('/health', (_req, res) => {
 
 app.listen(port, () => {
   console.log(`Bot HTTP server listening on http://localhost:${port}`);
+  console.log(`Tournament snapshots dir: ${TOURNAMENT_DIR}`);
+  console.log(`PokeAPI cache dir: ${POKEAPI_CACHE_DIR}`);
 });
 
 client.login(token);
-
