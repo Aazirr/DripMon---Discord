@@ -26,6 +26,8 @@ const DATA_DIR = path.join(__dirname, 'data');
 const TOURNAMENT_DIR = path.join(DATA_DIR, 'tournaments');
 const POKEAPI_CACHE_DIR = path.join(DATA_DIR, 'pokeapi-cache');
 const memoryPokeApiCache = new Map();
+let moveNameIndex = null;
+let abilityNameIndex = null;
 
 const TYPE_COLORS = {
   normal: '#a8a878',
@@ -122,6 +124,14 @@ function normalizeItemName(name) {
   return normalizePokemonName(name);
 }
 
+function compactPokeApiKey(name) {
+  return String(name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function isPokeApiNotFoundError(err) {
+  return /PokeAPI request failed \(404\)/i.test(String(err?.message || err || ''));
+}
+
 function pickTrainerSprite(playerUuid, playerName) {
   const seed = `${playerUuid || ''}:${playerName || ''}`;
   const digest = crypto.createHash('sha256').update(seed).digest();
@@ -215,14 +225,44 @@ async function getPokeApiPokemon(speciesName) {
 
 async function getPokeApiMove(moveName) {
   const normalized = normalizeMoveName(moveName);
-  const url = `https://pokeapi.co/api/v2/move/${encodeURIComponent(normalized)}`;
-  return getCachedJson(url);
+  const primaryUrl = `https://pokeapi.co/api/v2/move/${encodeURIComponent(normalized)}`;
+
+  try {
+    return await getCachedJson(primaryUrl);
+  } catch (err) {
+    if (!isPokeApiNotFoundError(err)) {
+      throw err;
+    }
+  }
+
+  const fallbackName = await resolvePokeApiResourceNameByCompactKey('move', normalized);
+  if (!fallbackName || fallbackName === normalized) {
+    throw new Error(`PokeAPI move not found for ${moveName}`);
+  }
+
+  const fallbackUrl = `https://pokeapi.co/api/v2/move/${encodeURIComponent(fallbackName)}`;
+  return getCachedJson(fallbackUrl);
 }
 
 async function getPokeApiAbility(abilityName) {
   const normalized = normalizeAbilityName(abilityName);
-  const url = `https://pokeapi.co/api/v2/ability/${encodeURIComponent(normalized)}`;
-  return getCachedJson(url);
+  const primaryUrl = `https://pokeapi.co/api/v2/ability/${encodeURIComponent(normalized)}`;
+
+  try {
+    return await getCachedJson(primaryUrl);
+  } catch (err) {
+    if (!isPokeApiNotFoundError(err)) {
+      throw err;
+    }
+  }
+
+  const fallbackName = await resolvePokeApiResourceNameByCompactKey('ability', normalized);
+  if (!fallbackName || fallbackName === normalized) {
+    throw new Error(`PokeAPI ability not found for ${abilityName}`);
+  }
+
+  const fallbackUrl = `https://pokeapi.co/api/v2/ability/${encodeURIComponent(fallbackName)}`;
+  return getCachedJson(fallbackUrl);
 }
 
 async function getPokeApiItem(itemName) {
@@ -237,6 +277,53 @@ async function getPokeApiItem(itemName) {
 async function getTypeData(typeName) {
   const url = `https://pokeapi.co/api/v2/type/${encodeURIComponent(typeName)}`;
   return getCachedJson(url);
+}
+
+async function getPokeApiNameIndex(resourceType) {
+  if (resourceType === 'move' && moveNameIndex) {
+    return moveNameIndex;
+  }
+  if (resourceType === 'ability' && abilityNameIndex) {
+    return abilityNameIndex;
+  }
+
+  const limit = resourceType === 'move' ? 2000 : 600;
+  const url = `https://pokeapi.co/api/v2/${resourceType}?limit=${limit}`;
+  const payload = await getCachedJson(url);
+  const index = new Map();
+
+  for (const entry of (payload.results || [])) {
+    const canonical = String(entry?.name || '').trim().toLowerCase();
+    if (!canonical) continue;
+    index.set(canonical, canonical);
+
+    const compact = compactPokeApiKey(canonical);
+    if (compact && !index.has(compact)) {
+      index.set(compact, canonical);
+    }
+  }
+
+  if (resourceType === 'move') {
+    moveNameIndex = index;
+  } else if (resourceType === 'ability') {
+    abilityNameIndex = index;
+  }
+
+  return index;
+}
+
+async function resolvePokeApiResourceNameByCompactKey(resourceType, normalizedName) {
+  const input = String(normalizedName || '').trim().toLowerCase();
+  if (!input) return null;
+
+  const index = await getPokeApiNameIndex(resourceType);
+  if (index.has(input)) {
+    return index.get(input);
+  }
+
+  const compact = compactPokeApiKey(input);
+  if (!compact) return null;
+  return index.get(compact) || null;
 }
 
 function parseWeaknessMultiplierByType(primaryType, secondaryType, primaryTypeData, secondaryTypeData) {
@@ -296,9 +383,26 @@ function parseStatSpreadString(raw) {
   return out;
 }
 
+function normalizeNatureName(raw) {
+  const input = String(raw || '').trim();
+  if (!input) return 'Unknown';
+
+  // Accept both namespaced and bare values from different mod versions.
+  let value = input;
+  const lower = value.toLowerCase();
+  if (lower.startsWith('cobblemon.nature.')) {
+    value = value.slice('cobblemon.nature.'.length);
+  }
+
+  const token = value.split(/[.:/\\]/).filter(Boolean).pop() || value;
+  if (!token) return 'Unknown';
+  return token.charAt(0).toUpperCase() + token.slice(1).toLowerCase();
+}
+
 async function enrichPokemon(pokemon, includeWeakness) {
   const enriched = {
     ...pokemon,
+    nature: normalizeNatureName(pokemon.nature),
     pokeApi: null,
     moveInfo: [],
     abilityInfo: null,
@@ -989,8 +1093,13 @@ function renderTournamentHtml(tournamentSlug) {
 
       const abilityDiv = document.createElement('div');
       abilityDiv.className = 'detail-item';
-      abilityDiv.innerHTML = '<div class="detail-label">Held Item</div><div class="detail-value">' + (pokemon.heldItem || 'None') + '</div>';
+      abilityDiv.innerHTML = '<div class="detail-label">Ability</div><div class="detail-value">' + (pokemon.ability || 'Unknown') + '</div>';
       details.appendChild(abilityDiv);
+
+      const heldItemDiv = document.createElement('div');
+      heldItemDiv.className = 'detail-item';
+      heldItemDiv.innerHTML = '<div class="detail-label">Held Item</div><div class="detail-value">' + (pokemon.heldItem || 'None') + '</div>';
+      details.appendChild(heldItemDiv);
 
       const ivsDiv = document.createElement('div');
       ivsDiv.className = 'detail-item';
