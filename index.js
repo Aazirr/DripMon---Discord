@@ -687,24 +687,23 @@ function renderTournamentHtml(tournamentSlug) {
   <title>DiscordLink Tournament - ${tournamentSlug}</title>
   <style>
     :root {
-      --bg: #fffaf3;
-      --ink: #1e2430;
-      --sub: #53627a;
-      --card: #ffffff;
-      --line: #d9e0ea;
-      --accent: #0f9d58;
-      --accent-2: #1a73e8;
-      --danger: #d93025;
+      --bg: #0f1419;
+      --bg-2: #1a1f2e;
+      --ink: #e0e6ed;
+      --sub: #a0aab8;
+      --card: #16192b;
+      --card-hover: #1e2235;
+      --line: #2a2f3f;
+      --accent: #10b981;
+      --accent-2: #3b82f6;
+      --danger: #ef4444;
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
       font-family: "Trebuchet MS", "Segoe UI", sans-serif;
       color: var(--ink);
-      background:
-        radial-gradient(circle at 15% 20%, #ffe4a3 0%, transparent 28%),
-        radial-gradient(circle at 85% 0%, #b7d6ff 0%, transparent 32%),
-        var(--bg);
+      background: linear-gradient(135deg, #0a0e14 0%, #16192b 50%, #0f1419 100%);
       min-height: 100vh;
     }
     .container {
@@ -715,73 +714,100 @@ function renderTournamentHtml(tournamentSlug) {
     .hero {
       border: 1px solid var(--line);
       border-radius: 16px;
-      background: linear-gradient(120deg, #ffffff 0%, #fff1d8 100%);
-      padding: 16px;
-      margin-bottom: 16px;
+      background: var(--card);
+      padding: 24px;
+      margin-bottom: 24px;
     }
-    .hero h1 { margin: 0 0 8px; }
+    .hero h1 { margin: 0 0 8px; font-size: 2rem; }
     .muted { color: var(--sub); }
     .toolbar {
       display: flex;
       flex-wrap: wrap;
       gap: 8px;
-      margin: 12px 0;
+      margin: 16px 0;
     }
     .toolbar input {
       border: 1px solid var(--line);
       border-radius: 10px;
-      padding: 8px 10px;
-      min-width: 220px;
-      background: #fff;
+      padding: 10px 12px;
+      min-width: 240px;
+      background: var(--bg-2);
+      color: var(--ink);
     }
+    .toolbar input::placeholder { color: var(--sub); }
     .grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-      gap: 12px;
+      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+      gap: 16px;
     }
     .player-card {
       border: 1px solid var(--line);
       border-radius: 14px;
       background: var(--card);
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
       overflow: hidden;
+      transition: all 0.2s ease;
+      cursor: pointer;
+    }
+    .player-card:hover {
+      border-color: var(--accent);
+      background: var(--card-hover);
     }
     .player-head {
       display: flex;
-      gap: 10px;
-      padding: 10px;
-      border-bottom: 1px solid var(--line);
+      gap: 12px;
+      padding: 12px;
       align-items: center;
+      user-select: none;
     }
     .trainer {
       width: 64px;
       height: 64px;
       border-radius: 10px;
       object-fit: contain;
-      background: #f8fbff;
+      background: var(--bg-2);
       border: 1px solid var(--line);
+      flex-shrink: 0;
     }
-    .player-meta h3 { margin: 0; font-size: 1.05rem; }
+    .player-meta {
+      flex: 1;
+      min-width: 0;
+    }
+    .player-meta h3 { margin: 0 0 4px; font-size: 1.1rem; }
+    .player-meta .muted { font-size: 0.85rem; }
+    .team-summary {
+      margin-top: 8px;
+      font-size: 0.9rem;
+      color: var(--sub);
+    }
     .chip {
       display: inline-block;
-      padding: 3px 8px;
+      padding: 2px 8px;
       border-radius: 999px;
       border: 1px solid var(--line);
-      font-size: 12px;
-      margin-right: 6px;
+      font-size: 11px;
+      margin-right: 4px;
       margin-top: 4px;
-      background: #f8fbff;
+      background: var(--bg-2);
+      color: var(--sub);
     }
     .team {
-      padding: 10px;
+      display: none;
+      padding: 12px;
+      border-top: 1px solid var(--line);
+      max-height: 500px;
+      overflow-y: auto;
+    }
+    .team.open {
       display: grid;
-      gap: 8px;
+      grid-template-columns: 1fr;
+      gap: 10px;
     }
     .poke {
       border: 1px solid var(--line);
       border-radius: 10px;
       padding: 8px;
-      background: #fff;
+      background: var(--bg-2);
     }
     .poke-row {
       display: flex;
@@ -794,58 +820,96 @@ function renderTournamentHtml(tournamentSlug) {
       height: 56px;
       object-fit: contain;
       border-radius: 8px;
-      background: #f4f8ff;
+      background: var(--card);
       border: 1px solid var(--line);
       flex-shrink: 0;
     }
+    .poke-info {
+      flex: 1;
+      min-width: 0;
+    }
+    .poke-name {
+      font-weight: bold;
+      font-size: 0.95rem;
+    }
+    .poke-meta {
+      font-size: 0.85rem;
+      color: var(--sub);
+      margin-top: 2px;
+    }
     .type-pill {
       display: inline-block;
-      font-size: 11px;
+      font-size: 10px;
       border-radius: 999px;
-      padding: 2px 8px;
+      padding: 2px 6px;
       color: #fff;
       margin-right: 4px;
       margin-top: 4px;
       text-transform: uppercase;
       letter-spacing: 0.04em;
+      font-weight: 600;
     }
     .details {
-      margin-top: 8px;
-      padding-top: 8px;
+      margin-top: 6px;
+      padding-top: 6px;
       border-top: 1px dashed var(--line);
       display: none;
-      font-size: 0.92rem;
+      font-size: 0.85rem;
     }
     .details.open { display: block; }
-    .moves { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+    .detail-item {
+      margin-top: 4px;
+      padding: 6px;
+      background: var(--card);
+      border-radius: 6px;
+      border: 1px solid var(--line);
+    }
+    .detail-label {
+      color: var(--sub);
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .detail-value {
+      color: var(--ink);
+      font-family: monospace;
+      font-size: 0.9rem;
+      margin-top: 2px;
+    }
+    .moves { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
     .move {
       border: 1px solid var(--line);
       border-radius: 999px;
-      padding: 2px 8px;
-      background: #f8fbff;
-      font-size: 12px;
+      padding: 2px 6px;
+      background: var(--card);
+      font-size: 11px;
+      color: var(--sub);
     }
     .weak-grid {
-      margin-top: 8px;
+      margin-top: 6px;
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(90px, 1fr));
-      gap: 6px;
+      grid-template-columns: repeat(auto-fit, minmax(80px, 1fr));
+      gap: 4px;
     }
     .weak-item {
       border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 4px 6px;
-      font-size: 12px;
-      background: #fff;
+      border-radius: 6px;
+      padding: 3px 4px;
+      font-size: 11px;
+      background: var(--card);
+      text-align: center;
     }
-    .footnote {
-      margin-top: 12px;
+    .footer {
+      margin-top: 32px;
+      padding-top: 16px;
+      border-top: 1px solid var(--line);
       color: var(--sub);
       font-size: 12px;
+      text-align: center;
     }
     @media (max-width: 680px) {
       .container { padding: 12px; }
-      .player-head { align-items: flex-start; }
+      .grid { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -860,7 +924,7 @@ function renderTournamentHtml(tournamentSlug) {
       <div class="muted" id="weakness-note"></div>
     </div>
     <div id="grid" class="grid"></div>
-    <div class="footnote">Data source: mod export snapshots + cached PokeAPI resources. Trainer sprites: Pokemon Showdown.</div>
+    <div class="footer">Data source: mod export snapshots + cached PokeAPI resources. Trainer sprites: Pokemon Showdown.</div>
   </div>
 
   <script>
@@ -870,7 +934,7 @@ function renderTournamentHtml(tournamentSlug) {
       const span = document.createElement('span');
       span.className = 'type-pill';
       span.textContent = typeName;
-      span.style.background = TYPE_COLORS[typeName] || '#777';
+      span.style.background = TYPE_COLORS[typeName] || '#666';
       return span;
     }
 
@@ -896,66 +960,93 @@ function renderTournamentHtml(tournamentSlug) {
       sprite.src = pokemon.pokeApi?.artwork || pokemon.pokeApi?.sprite || 'https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/0.png';
       sprite.alt = pokemon.displayName || pokemon.species || 'Pokemon';
 
-      const meta = document.createElement('div');
+      const info = document.createElement('div');
+      info.className = 'poke-info';
+      
       const name = document.createElement('div');
-      name.innerHTML = '<strong>' + (pokemon.displayName || pokemon.species || 'Unknown') + '</strong>';
-      meta.appendChild(name);
+      name.className = 'poke-name';
+      name.textContent = pokemon.displayName || pokemon.species || 'Unknown';
+      info.appendChild(name);
 
-      const chips = document.createElement('div');
-      chips.innerHTML = '<span class="chip">Nature: ' + (pokemon.nature || 'Unknown') + '</span>'
-        + '<span class="chip">Gender: ' + (pokemon.gender || 'Unknown') + '</span>'
-        + '<span class="chip">Form: ' + (pokemon.form || 'Unknown') + '</span>';
-      meta.appendChild(chips);
+      const meta = document.createElement('div');
+      meta.className = 'poke-meta';
+      meta.innerHTML = (pokemon.nature || 'Unknown') + ' | ' + (pokemon.ability || 'Unknown');
+      info.appendChild(meta);
 
       const typeWrap = document.createElement('div');
       const types = pokemon.pokeApi?.types || [];
       for (const t of types) {
         typeWrap.appendChild(createTypePill(t));
       }
-      meta.appendChild(typeWrap);
+      info.appendChild(typeWrap);
 
       row.appendChild(sprite);
-      row.appendChild(meta);
+      row.appendChild(info);
       wrapper.appendChild(row);
 
       const details = document.createElement('div');
       details.className = 'details';
 
-      details.innerHTML = ''
-        + '<div><strong>Ability:</strong> ' + (pokemon.ability || 'Unknown') + '</div>'
-        + '<div><strong>Held Item:</strong> ' + (pokemon.heldItem || 'None') + '</div>'
-        + '<div><strong>IVs:</strong> ' + (pokemon.ivSpread || 'unknown') + '</div>'
-        + '<div><strong>EVs:</strong> ' + (pokemon.evSpread || 'unknown') + '</div>';
+      const abilityDiv = document.createElement('div');
+      abilityDiv.className = 'detail-item';
+      abilityDiv.innerHTML = '<div class="detail-label">Held Item</div><div class="detail-value">' + (pokemon.heldItem || 'None') + '</div>';
+      details.appendChild(abilityDiv);
+
+      const ivsDiv = document.createElement('div');
+      ivsDiv.className = 'detail-item';
+      ivsDiv.innerHTML = '<div class="detail-label">IVs</div><div class="detail-value">' + (pokemon.ivSpread || 'unknown') + '</div>';
+      details.appendChild(ivsDiv);
+
+      const evsDiv = document.createElement('div');
+      evsDiv.className = 'detail-item';
+      evsDiv.innerHTML = '<div class="detail-label">EVs</div><div class="detail-value">' + (pokemon.evSpread || 'unknown') + '</div>';
+      details.appendChild(evsDiv);
 
       const moveWrap = document.createElement('div');
-      moveWrap.className = 'moves';
+      moveWrap.className = 'detail-item';
+      const moveLabel = document.createElement('div');
+      moveLabel.className = 'detail-label';
+      moveLabel.textContent = 'Moves';
+      moveWrap.appendChild(moveLabel);
+      
+      const movesContainer = document.createElement('div');
+      movesContainer.className = 'moves';
       const moveInfo = Array.isArray(pokemon.moveInfo) ? pokemon.moveInfo : [];
       if (moveInfo.length === 0) {
         const none = document.createElement('span');
         none.className = 'move';
         none.textContent = 'No moves';
-        moveWrap.appendChild(none);
+        movesContainer.appendChild(none);
       } else {
         for (const move of moveInfo) {
           const m = document.createElement('span');
           m.className = 'move';
           const suffix = move.type ? ' [' + move.type + ']' : '';
           m.textContent = (move.sourceName || move.name || 'unknown') + suffix;
-          moveWrap.appendChild(m);
+          movesContainer.appendChild(m);
         }
       }
+      moveWrap.appendChild(movesContainer);
       details.appendChild(moveWrap);
 
       if (revealWeakness && Array.isArray(pokemon.weakness)) {
         const weak = document.createElement('div');
-        weak.className = 'weak-grid';
+        weak.className = 'detail-item';
+        const weakLabel = document.createElement('div');
+        weakLabel.className = 'detail-label';
+        weakLabel.textContent = 'Weaknesses';
+        weak.appendChild(weakLabel);
+        
+        const weakGrid = document.createElement('div');
+        weakGrid.className = 'weak-grid';
         for (const entry of pokemon.weakness) {
           if (![0, 0.5, 2, 4].includes(entry.multiplier)) continue;
           const item = document.createElement('div');
           item.className = 'weak-item';
           item.textContent = entry.type + ': ' + weaknessLabel(entry.multiplier);
-          weak.appendChild(item);
+          weakGrid.appendChild(item);
         }
+        weak.appendChild(weakGrid);
         details.appendChild(weak);
       }
 
@@ -974,22 +1065,29 @@ function renderTournamentHtml(tournamentSlug) {
 
       const head = document.createElement('div');
       head.className = 'player-head';
-      head.innerHTML = ''
-        + '<img class="trainer" src="' + player.trainerSprite + '" alt="Trainer sprite" />'
+      head.style.cursor = 'pointer';
+      head.innerHTML = '<img class="trainer" src="' + player.trainerSprite + '" alt="Trainer sprite" />'
         + '<div class="player-meta">'
-        + '  <h3>' + player.playerName + '</h3>'
-        + '  <div class="muted">Registered: ' + (player.registeredAt || 'Unknown') + '</div>'
-        + '  <div><span class="chip">Team Size: ' + (Array.isArray(player.team) ? player.team.length : 0) + '</span></div>'
+        + '<h3>' + player.playerName + '</h3>'
+        + '<div class="muted">Team: ' + (Array.isArray(player.team) ? player.team.length : 0) + ' Pokémon</div>';
+      
+      const team = Array.isArray(player.team) ? player.team : [];
+      const teamNames = team.slice(0, 3).map(p => p.species || p.displayName || 'Unknown').join(', ');
+      head.innerHTML += '<div class="team-summary">' + (teamNames || 'No team') + (team.length > 3 ? '...' : '') + '</div>'
         + '</div>';
+      
       card.appendChild(head);
 
       const teamWrap = document.createElement('div');
       teamWrap.className = 'team';
-      const team = Array.isArray(player.team) ? player.team : [];
       for (const pokemon of team) {
         teamWrap.appendChild(renderPokemon(pokemon, revealWeakness));
       }
       card.appendChild(teamWrap);
+
+      head.addEventListener('click', () => {
+        teamWrap.classList.toggle('open');
+      });
 
       return card;
     }
