@@ -209,7 +209,16 @@ async function getCachedJson(url) {
 }
 
 async function getPokeApiPokemon(speciesName) {
-  const normalized = normalizePokemonName(speciesName);
+  return getPokeApiPokemonWithForm(speciesName, null);
+}
+
+function normalizeFormName(name) {
+  return normalizePokemonName(name)
+    .replace(/-form$/g, '')
+    .replace(/-forme$/g, '');
+}
+
+function resolvePokemonAlias(normalizedSpecies) {
   const speciesAliases = {
     nidoranmale: 'nidoran-m',
     nidoranfemale: 'nidoran-f',
@@ -218,9 +227,56 @@ async function getPokeApiPokemon(speciesName) {
     farfetchd: 'farfetchd',
   };
 
-  const resolved = speciesAliases[normalized] || normalized;
-  const url = `https://pokeapi.co/api/v2/pokemon/${encodeURIComponent(resolved)}`;
-  return getCachedJson(url);
+  return speciesAliases[normalizedSpecies] || normalizedSpecies;
+}
+
+function buildPokemonLookupCandidates(speciesName, formName) {
+  const normalizedSpecies = normalizePokemonName(speciesName);
+  const base = resolvePokemonAlias(normalizedSpecies);
+  const candidates = [];
+
+  const form = normalizeFormName(formName);
+  const hasForm = form && form !== 'normal';
+
+  if (hasForm) {
+    const formAliases = {
+      hisuian: 'hisui',
+      alolan: 'alola',
+      galarian: 'galar',
+      paldean: 'paldea',
+    };
+
+    const resolvedForm = formAliases[form] || form;
+    candidates.push(`${base}-${resolvedForm}`);
+  }
+
+  candidates.push(base);
+  return [...new Set(candidates)];
+}
+
+async function getPokeApiPokemonWithForm(speciesName, formName) {
+  const candidates = buildPokemonLookupCandidates(speciesName, formName);
+
+  for (const resolved of candidates) {
+    const url = `https://pokeapi.co/api/v2/pokemon/${encodeURIComponent(resolved)}`;
+    try {
+      return await getCachedJson(url);
+    } catch (err) {
+      if (!isPokeApiNotFoundError(err)) {
+        throw err;
+      }
+    }
+  }
+
+  const normalized = normalizePokemonName(speciesName);
+  const resolved = resolvePokemonAlias(normalized);
+  const fallbackName = await resolvePokeApiResourceNameByCompactKey('pokemon', resolved);
+  if (!fallbackName) {
+    throw new Error(`PokeAPI pokemon not found for ${speciesName}${formName ? ` (${formName})` : ''}`);
+  }
+
+  const fallbackUrl = `https://pokeapi.co/api/v2/pokemon/${encodeURIComponent(fallbackName)}`;
+  return getCachedJson(fallbackUrl);
 }
 
 async function getPokeApiMove(moveName) {
@@ -415,7 +471,7 @@ async function enrichPokemon(pokemon, includeWeakness) {
   };
 
   try {
-    const pokeApi = await getPokeApiPokemon(pokemon.species || pokemon.displayName);
+    const pokeApi = await getPokeApiPokemonWithForm(pokemon.species || pokemon.displayName, pokemon.form);
     enriched.pokeApi = {
       id: pokeApi.id,
       name: pokeApi.name,
@@ -1074,7 +1130,8 @@ function renderTournamentHtml(tournamentSlug) {
 
       const meta = document.createElement('div');
       meta.className = 'poke-meta';
-      meta.innerHTML = (pokemon.nature || 'Unknown') + ' | ' + (pokemon.ability || 'Unknown');
+      const formLabel = (pokemon.form && String(pokemon.form).toLowerCase() !== 'normal') ? (' | ' + pokemon.form) : '';
+      meta.innerHTML = (pokemon.nature || 'Unknown') + ' | ' + (pokemon.ability || 'Unknown') + formLabel;
       info.appendChild(meta);
 
       const typeWrap = document.createElement('div');
